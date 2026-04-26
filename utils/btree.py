@@ -7,31 +7,45 @@ from .constants import (
     BTRFS_EXTENT_DATA_KEY, BTRFS_DIR_ITEM_KEY
 )
 
+# Ensure a directory exists to dump our recovered files
 OUTPUT_DIR = "recovery_output"
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
-def parse_node_items(f, current_offset, node_gen):
+def parse_node_items(f, current_offset, node_gen, inode_map):
+    """
+    Parses a B-tree leaf node's item pointers. 
+    It builds a mapping of Inodes to Filenames, and extracts inline file data.
+    """
     f.seek(current_offset)
     header = f.read(NODE_HEADER_SIZE)
     
+    # Verify it is a leaf node (Level 0 is at offset 100)
     if header[100] != 0:
         return 
         
+    # Get number of items (offset 96)
     nritems = struct.unpack("<I", header[96:100])[0]
     
     for i in range(nritems):
+        # Calculate offset for this specific 25-byte item pointer
         pointer_offset = current_offset + NODE_HEADER_SIZE + (i * ITEM_POINTER_SIZE)
         f.seek(pointer_offset)
         pointer_raw = f.read(ITEM_POINTER_SIZE)
         
+        # Unpack the pointer
         key_raw, data_offset, data_size = struct.unpack("<17sII", pointer_raw)
+        
+        # Extract the Object ID (first 8 bytes of the key) and the Item Type (9th byte)
         object_id = struct.unpack("<Q", key_raw[0:8])[0]
         item_type = key_raw[8]
         
+        # Calculate where the actual data payload starts
         absolute_data_offset = current_offset + NODE_HEADER_SIZE + data_offset
         
-        # --- CARVE FILENAMES ---
+        # ---------------------------------------------------------
+        # 1. CARVE FILENAMES (DIR_ITEM)
+        # ---------------------------------------------------------
         if item_type == BTRFS_DIR_ITEM_KEY:
             f.seek(absolute_data_offset)
             
@@ -39,7 +53,6 @@ def parse_node_items(f, current_offset, node_gen):
             dir_item_header = f.read(30)
             
             # Unpack to get the Target Inode and the Name Length
-            # <17s (Location Key) Q (Transid) H (Data Len) H (Name Len) B (Type)
             target_key, transid, data_len, name_len, file_type = struct.unpack("<17sQHHB", dir_item_header)
             
             # The target Inode is the first 8 bytes of the target_key
@@ -50,25 +63,43 @@ def parse_node_items(f, current_offset, node_gen):
             try:
                 filename = raw_name.decode('utf-8', errors='ignore')
                 print(f"        [DIR] Found Filename: '{filename}' -> Points to Inode {target_inode}")
+                
+                # UPDATE THE IN-MEMORY MAP: Store the discovered filename for this target Inode
+                if target_inode not in inode_map:
+                    inode_map[target_inode] = filename
             except:
                 pass
                 
-        # --- CARVE FILE DATA ---
+        # ---------------------------------------------------------
+        # 2. CARVE FILE DATA (EXTENT_DATA)
+        # ---------------------------------------------------------
         elif item_type == BTRFS_EXTENT_DATA_KEY:
             f.seek(absolute_data_offset)
+            
+            # The first 21 bytes are the Btrfs extent header.
             extent_header = f.read(21)
+            
+            # The 21st byte (index 20) tells us the Extent Type (0 = Inline, 1 = Regular)
             extent_type = extent_header[20]
             
             if extent_type == 0:
+                # INLINE DATA RECOVERY
                 payload_size = data_size - 21
                 raw_file_bytes = f.read(payload_size)
                 
-                # Note: We temporarily save it as its Inode number until we cross-reference
-                out_path = f"{OUTPUT_DIR}/inode_{object_id}_gen_{node_gen}_inline.bin"
+                # CHECK THE MAP: Do we already know the real filename for this Inode?
+                real_filename = inode_map.get(object_id, f"inode_{object_id}")
+                
+                out_path = f"{OUTPUT_DIR}/{real_filename}_gen_{node_gen}_inline.bin"
                 with open(out_path, "wb") as out_file:
                     out_file.write(raw_file_bytes)
                 
-                print(f"        [***] Extracted Data for Inode {object_id} -> {out_path}")
+                print(f"        [***] Extracted Data -> {out_path}")
+
+            elif extent_type == 1:
+                # REGULAR EXTENT RECOVERY (Large Files)
+                print(f"        [!] Found Large File Data (Inode {object_id}). Requires Chunk Tree Translation.")
+
 
 def sweep_for_orphans(image_path, sb_data):
     """
@@ -81,7 +112,11 @@ def sweep_for_orphans(image_path, sb_data):
     nodesize = sb_data["nodesize"]
     orphans_found = 0
     
+    # Initialize the global dictionary to track Inode-to-Filename mappings
+    inode_map = {} 
+    
     with open(image_path, "rb") as f:
+        # Start immediately after the superblock
         current_offset = SUPERBLOCK_OFFSET + nodesize
         
         while True:
@@ -94,13 +129,16 @@ def sweep_for_orphans(image_path, sb_data):
             node_fsid = header[32:48]
             
             if node_fsid == fsid:
+                # Extract generation
                 node_gen = struct.unpack("<Q", header[80:88])[0]
                 
-                # Check for Orphan Status
+                # Core forensic logic: Is it orphaned?
                 if node_gen < sb_gen:
                     print(f"    [!] Orphaned Node Found at offset: {current_offset} (Gen: {node_gen})")
                     orphans_found += 1
-                    parse_node_items(f, current_offset, node_gen)
+                    
+                    # Pass the map into the parser to cross-reference data and names
+                    parse_node_items(f, current_offset, node_gen, inode_map)
             
             current_offset += nodesize
 
