@@ -78,28 +78,33 @@ def parse_node_items(f, current_offset, node_gen, inode_map):
             
             # The first 21 bytes are the Btrfs extent header.
             extent_header = f.read(21)
-            
-            # The 21st byte (index 20) tells us the Extent Type (0 = Inline, 1 = Regular)
             extent_type = extent_header[20]
             
             if extent_type == 0:
-                # INLINE DATA RECOVERY
+                # INLINE DATA RECOVERY (Small Files)
                 payload_size = data_size - 21
                 raw_file_bytes = f.read(payload_size)
                 
-                # CHECK THE MAP: Do we already know the real filename for this Inode?
                 real_filename = inode_map.get(object_id, f"inode_{object_id}")
-                
                 out_path = f"{OUTPUT_DIR}/{real_filename}_gen_{node_gen}_inline.bin"
                 with open(out_path, "wb") as out_file:
                     out_file.write(raw_file_bytes)
                 
-                print(f"        [***] Extracted Data -> {out_path}")
+                print(f"        [***] Extracted Inline Data -> {out_path}")
 
             elif extent_type == 1:
                 # REGULAR EXTENT RECOVERY (Large Files)
-                print(f"        [!] Found Large File Data (Inode {object_id}). Requires Chunk Tree Translation.")
-
+                # The next 53 bytes contain the Regular Extent data. 
+                # We need the first 16 bytes: Logical Address (8 bytes) and Size (8 bytes).
+                regular_extent_data = f.read(16)
+                
+                logical_address, extent_size = struct.unpack("<QQ", regular_extent_data)
+                
+                real_filename = inode_map.get(object_id, f"inode_{object_id}")
+                
+                print(f"        [!] Found Large File: '{real_filename}' (Inode {object_id})")
+                print(f"            -> Extent Size: {extent_size} bytes")
+                print(f"            -> Logical Address: {logical_address}")
 
 def sweep_for_orphans(image_path, sb_data):
     """
