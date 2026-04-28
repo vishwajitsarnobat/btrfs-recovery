@@ -506,9 +506,9 @@ Btrfs stores checksums for all data in the checksum tree. By parsing old checksu
 **The innovation** is combining ALL of these into a single tool:
 
 ```
-                    ┌─────────────────────────────┐
+                    ┌──────────────────────────────┐
                     │     Unified Recovery Engine  │
-                    ├─────────────────────────────┤
+                    ├──────────────────────────────┤
                     │  Brute-Force Scan (current)  │ ← what we have
                     │  + Superblock Backup Roots   │ ← free wins
                     │  + Root Tree Walk            │ ← structural discovery
@@ -516,8 +516,8 @@ Btrfs stores checksums for all data in the checksum tree. By parsing old checksu
                     │  + Extent Backref Analysis   │ ← large file recovery
                     │  + Orphan-Item Intelligence  │ ← unique forensic data
                     │  + Checksum Validation       │ ← confidence scoring
-                    │  + Cross-Gen Timeline         │ ← forensic reporting
-                    └─────────────────────────────┘
+                    │  + Cross-Gen Timeline        │ ← forensic reporting
+                    └──────────────────────────────┘
 ```
 
 This would be the **first tool of its kind** — no existing open-source or commercial tool combines structural tree walking with orphaned node scanning, Orphan-Item analysis, and generation-based diffing.
